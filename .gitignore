@@ -1,0 +1,11 @@
+.env
+.env.local
+.env*.local
+node_modules/
+.next/
+out/
+
+.vercel
+
+var/wa-engine/logs/
+var/wa-engine/sessions/
