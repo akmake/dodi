@@ -357,6 +357,12 @@ export const startTenant = async (
   if (existing) {
     if (existing.reconnectLock) return;
     if (existing.status === "connected") return;
+    // A socket that is mid-handshake or already showing a QR must not be torn
+    // down: that invalidates the QR on the user's screen, and its own close
+    // event schedules another reconnect — a self-feeding loop that regenerates
+    // the QR every few seconds and makes it impossible to scan. Baileys rotates
+    // the QR on the live socket by itself, so leaving it alone is correct.
+    if (existing.status === "connecting" || existing.status === "waiting_qr") return;
     stopHeartbeat(existing);
     try {
       existing.sock?.end?.(undefined);
