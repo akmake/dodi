@@ -18,6 +18,7 @@ export function ensureBtbIndexes(): Promise<void> {
         db.collection("statusposts").createIndex({ accountId: 1, postedAt: -1 }),
         db.collection("statusviews").createIndex({ accountId: 1, msgId: 1, viewerJid: 1 }, { unique: true }),
         db.collection("statusviews").createIndex({ accountId: 1, viewerJid: 1 }),
+        db.collection("statusdeletions").createIndex({ accountId: 1, msgId: 1 }, { unique: true }),
       ]);
     })().catch((err) => {
       indexesReady = null;
@@ -30,6 +31,39 @@ export function ensureBtbIndexes(): Promise<void> {
 const accountsCol = async () => (await getDb()).collection<BtbAccount>("btbaccounts");
 const postsCol = async () => (await getDb()).collection<StatusPost>("statusposts");
 const viewsCol = async () => (await getDb()).collection<StatusView>("statusviews");
+/**
+ * Tombstones for deleted statuses. `onStatusPost` upserts by `{accountId,msgId}`,
+ * so without this a status the user deleted comes straight back the next time
+ * WhatsApp re-delivers that message (reconnect, resync). A tombstone is cheap and
+ * makes the delete stick.
+ */
+const deletionsCol = async () =>
+  (await getDb()).collection<{ accountId: ObjectId; msgId: string; deletedAt: Date }>("statusdeletions");
+
+export async function markStatusDeleted(accountId: string, msgId: string): Promise<void> {
+  const col = await deletionsCol();
+  await col.updateOne(
+    { accountId: new ObjectId(accountId), msgId },
+    { $setOnInsert: { accountId: new ObjectId(accountId), msgId, deletedAt: new Date() } },
+    { upsert: true }
+  );
+}
+
+export async function isStatusDeleted(accountId: string, msgId: string): Promise<boolean> {
+  const col = await deletionsCol();
+  return (await col.countDocuments({ accountId: new ObjectId(accountId), msgId }, { limit: 1 })) > 0;
+}
+
+/** Remove a status by its WhatsApp message id (the shape a revoke event gives us). */
+export async function deleteStatusPostByMsgId(accountId: string, msgId: string): Promise<boolean> {
+  const oid = new ObjectId(accountId);
+  const views = await viewsCol();
+  await views.deleteMany({ accountId: oid, msgId } as Filter<StatusView>);
+  const posts = await postsCol();
+  const res = await posts.deleteOne({ accountId: oid, msgId } as Filter<StatusPost>);
+  await markStatusDeleted(accountId, msgId);
+  return (res.deletedCount ?? 0) > 0;
+}
 
 export async function listBtbAccounts(): Promise<BtbAccount[]> {
   const col = await accountsCol();
@@ -143,6 +177,7 @@ export async function deleteStatusPost(accountId: string, statusId: string): Pro
   const views = await viewsCol();
   await views.deleteMany({ accountId: new ObjectId(accountId), msgId: post.msgId } as Filter<StatusView>);
   await posts.deleteOne({ _id: post._id } as Filter<StatusPost>);
+  await markStatusDeleted(accountId, post.msgId);
   return post;
 }
 

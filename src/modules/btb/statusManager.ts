@@ -22,7 +22,8 @@ import {
   getMessageText,
   getMessageType,
 } from "@/modules/wa-engine/whatsappManager";
-import type { StatusPostHook, StatusReceiptHook } from "@/modules/wa-engine/whatsappManager";
+import type { StatusPostHook, StatusReceiptHook, StatusRevokeHook } from "@/modules/wa-engine/whatsappManager";
+import { deleteStatusPostByMsgId, isStatusDeleted } from "./repository";
 import { processImage, processVideo } from "./statusMedia";
 import { probeMedia, type ImageProbe, type VideoProbe } from "./statusProbe";
 import { getDb } from "@/core/db/mongo";
@@ -84,6 +85,8 @@ const onStatusPost: StatusPostHook = async (waTenantId, m) => {
   const accountId = waTenantId.replace("btb_", "");
   const msgId = m.key.id as string;
   if (testMsgIds.has(msgId)) return; // quality-test status — not recorded
+  // Deleted by the user (here or on the phone) — the upsert below would bring it back.
+  if (await isStatusDeleted(accountId, msgId)) return;
   try {
     const posts = await postsCol();
     const post = await posts.findOneAndUpdate(
@@ -436,7 +439,21 @@ export async function deleteStatusOnWhatsApp(accountId: string, msgId: string): 
   }
 }
 
-export const connect = (accountId: string) => startTenant(waId(accountId), async () => {}, { onStatusPost, onStatusReceipt, emitOwnEvents: true });
+// A status deleted on WhatsApp (from the phone, or by our own delete-for-everyone)
+// must disappear here too — otherwise the list keeps showing statuses that no
+// longer exist.
+const onStatusRevoke: StatusRevokeHook = async (waTenantId, msgId) => {
+  const accountId = waTenantId.replace("btb_", "");
+  try {
+    const removed = await deleteStatusPostByMsgId(accountId, msgId);
+    logger.info("btb", removed ? "status revoked on WhatsApp — removed locally" : "status revoked on WhatsApp — already gone", { accountId, msgId });
+    if (removed) broadcast("btb_status");
+  } catch (err) {
+    logger.warn("btb", `status revoke failed: ${err instanceof Error ? err.message : String(err)}`, { accountId, msgId });
+  }
+};
+
+export const connect = (accountId: string) => startTenant(waId(accountId), async () => {}, { onStatusPost, onStatusReceipt, onStatusRevoke, emitOwnEvents: true });
 
 export const disconnect = (accountId: string) => stopTenant(waId(accountId));
 export const reset = (accountId: string) => resetSession(waId(accountId));

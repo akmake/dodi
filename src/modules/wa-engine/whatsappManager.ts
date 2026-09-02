@@ -37,6 +37,8 @@ const MAX_RECONNECT_ATTEMPTS = 15;
 const BASE_RECONNECT_DELAY = 3000;
 
 export type StatusPostHook = (tenantId: string, m: WAMessage) => Promise<void>;
+/** A status that was deleted on WhatsApp (revoked), by message id. */
+export type StatusRevokeHook = (tenantId: string, msgId: string) => Promise<void>;
 export type StatusReceiptHook = (
   tenantId: string,
   view: { msgId: string; viewerJid: string; viewedAt: Date; receiptType: "read" | "played" }
@@ -50,6 +52,7 @@ interface Instance {
   onMessage: (tenantId: string, msg: WAMessage, sock: WASocket) => Promise<void>;
   onStatusPost: StatusPostHook | null;
   onStatusReceipt: StatusReceiptHook | null;
+  onStatusRevoke: StatusRevokeHook | null;
   onStatusMedia: unknown;
   emitOwnEvents: boolean;
   reconnectLock: boolean;
@@ -72,6 +75,7 @@ interface Instance {
 interface StartOpts {
   onStatusPost?: StatusPostHook | null;
   onStatusReceipt?: StatusReceiptHook | null;
+  onStatusRevoke?: StatusRevokeHook | null;
   onStatusMedia?: unknown;
   emitOwnEvents?: boolean;
 }
@@ -312,6 +316,7 @@ const scheduleReconnect = (tenantId: string, reason: string) => {
       void startTenant(tenantId, inst.onMessage, {
         onStatusPost: inst.onStatusPost,
         onStatusReceipt: inst.onStatusReceipt,
+        onStatusRevoke: inst.onStatusRevoke,
         onStatusMedia: inst.onStatusMedia,
         emitOwnEvents: inst.emitOwnEvents,
       });
@@ -401,6 +406,7 @@ export const startTenant = async (
     onMessage,
     onStatusPost: opts.onStatusPost ?? existing?.onStatusPost ?? null,
     onStatusReceipt: opts.onStatusReceipt ?? existing?.onStatusReceipt ?? null,
+    onStatusRevoke: opts.onStatusRevoke ?? existing?.onStatusRevoke ?? null,
     onStatusMedia: opts.onStatusMedia ?? existing?.onStatusMedia ?? null,
     emitOwnEvents: opts.emitOwnEvents ?? existing?.emitOwnEvents ?? false,
     reconnectLock: false,
@@ -506,6 +512,21 @@ export const startTenant = async (
     for (const m of messages) {
       // BTB: a status that went up (from the phone or from us) — handled regardless of `type`
       if (m.key.remoteJid === "status@broadcast") {
+        // Deleting a status on the phone arrives as a REVOKE protocolMessage
+        // naming the status it removes. Without this the local record survives
+        // a delete made outside the app.
+        const revoke = m.message?.protocolMessage;
+        if (revoke && (revoke.type === 0 || String(revoke.type) === "REVOKE")) {
+          const revokedId = revoke.key?.id;
+          if (revokedId && inst.onStatusRevoke) {
+            try {
+              await inst.onStatusRevoke(tenantId, revokedId);
+            } catch (err) {
+              console.error(`[${tenantId}] status revoke hook:`, err instanceof Error ? err.message : err);
+            }
+          }
+          continue;
+        }
         if (inst.onStatusPost) {
           const mtype = m.message ? Object.keys(m.message).filter((k) => k !== "messageContextInfo")[0] : null;
           logger.warn("btb", "[DIAG] upsert status@broadcast", {
@@ -565,7 +586,24 @@ export const startTenant = async (
     for (const c of contacts || []) storeContact(inst, c);
   }) as never);
 
-  sock.ev.on("messages.update", () => touch(inst));
+  sock.ev.on("messages.update", (async (
+    updates: Array<{ key?: { remoteJid?: string | null; id?: string | null }; update?: { message?: unknown; messageStubType?: unknown } }>
+  ) => {
+    touch(inst);
+    if (!inst.onStatusRevoke) return;
+    for (const u of updates || []) {
+      if (u.key?.remoteJid !== "status@broadcast") continue;
+      // A revoked message is delivered as a null body, or stub type REVOKE (1).
+      const upd = u.update;
+      const revoked = !!upd && (upd.message === null || String(upd.messageStubType) === "1" || String(upd.messageStubType) === "REVOKE");
+      if (!revoked || !u.key?.id) continue;
+      try {
+        await inst.onStatusRevoke(tenantId, u.key.id);
+      } catch (err) {
+        console.error(`[${tenantId}] status revoke hook:`, err instanceof Error ? err.message : err);
+      }
+    }
+  }) as never);
 
   // BTB: status view receipts => viewer records. WTM (no hook) just touches.
   sock.ev.on("message-receipt.update", (async (updates: Array<{ key: { remoteJid?: string; fromMe?: boolean; id?: string }; receipt?: { userJid?: string; readTimestamp?: number; playedTimestamp?: number } }>) => {
