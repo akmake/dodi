@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /var/www/bootWhat
+cd /home/appuser/projects/dodi
 
 echo "📥 מושך שינויים מ-GitHub..."
 git pull origin main
@@ -13,6 +13,6 @@ echo "🔨 מבנה..."
 npm run build
 
 echo "🔄 מפעיל מחדש..."
-pm2 restart bootwhat
+pm2 restart dodi
 
 echo "✅ הושלם בהצלחה"
