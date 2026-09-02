@@ -125,6 +125,10 @@ const onStatusReceipt: StatusReceiptHook = async (waTenantId, view) => {
   const accountId = waTenantId.replace("btb_", "");
   const { msgId, viewerJid, viewedAt, receiptType } = view;
   if (testMsgIds.has(msgId)) return;
+  // The upsert below re-creates a post row from a view receipt alone. Without
+  // this check a status the user deleted comes back every time somebody views
+  // it on WhatsApp — deleted here, resurrected seconds later.
+  if (await isStatusDeleted(accountId, msgId)) return;
   try {
     const posts = await postsCol();
     const post = await posts.findOneAndUpdate(
