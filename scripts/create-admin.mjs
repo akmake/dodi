@@ -41,6 +41,7 @@ const OWNER_SCOPES = [
   "inbox.access", "contacts.view", "contacts.manage", "pii.view", "templates.manage",
   "campaigns.send", "bot.edit", "analytics.view", "users.manage", "data.export",
   "api.access", "settings.manage", "wtm.manage", "btb.manage", "btb.view_own",
+  "wta.manage", "wre.manage",
 ];
 
 function hashPassword(pw) {
@@ -70,12 +71,12 @@ try {
   if (!user) {
     user = {
       id: randomUUID(), tenantId: TENANT, email: emailLc, name: "Owner", roleId: role.id,
-      status: "active", lastLoginAt: null, allowedServices: ["wtm", "btb", "wbr"], createdAt: now, updatedAt: now,
+      status: "active", lastLoginAt: null, allowedServices: ["wtm", "btb", "wbr", "wta", "wre"], createdAt: now, updatedAt: now,
     };
     await db.collection("users").insertOne(user);
     console.log("✓ נוצר משתמש", emailLc);
   } else {
-    await db.collection("users").updateOne({ id: user.id }, { $set: { roleId: role.id, status: "active", allowedServices: ["wtm", "btb", "wbr"], updatedAt: now } });
+    await db.collection("users").updateOne({ id: user.id }, { $set: { roleId: role.id, status: "active", allowedServices: ["wtm", "btb", "wbr", "wta", "wre"], updatedAt: now } });
     console.log("• עודכן משתמש קיים", emailLc);
   }
 
